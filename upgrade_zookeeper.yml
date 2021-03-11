@@ -109,7 +109,7 @@
         - zookeeper_current_version != confluent_package_version
 
     - debug:
-        msg: "Leader: {{inventory_hostname}}"
+        msg: "Leader: {{ inventory_hostname }}"
       when: '"leader" in leader_query.stdout'
 
 - name: Zookeeper Upgrade

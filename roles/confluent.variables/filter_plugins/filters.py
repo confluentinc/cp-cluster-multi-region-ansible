@@ -7,6 +7,8 @@ class FilterModule(object):
             'kafka_protocol_defaults': self.kafka_protocol_defaults,
             'get_sasl_mechanisms': self.get_sasl_mechanisms,
             'get_hostnames': self.get_hostnames,
+            'resolve_hostname': self.resolve_hostname,
+            'resolve_hostnames': self.resolve_hostnames,
             'cert_extension': self.cert_extension,
             'ssl_required': self.ssl_required,
             'java_arg_build_out': self.java_arg_build_out,
@@ -16,7 +18,8 @@ class FilterModule(object):
             'listener_properties': self.listener_properties,
             'client_properties': self.client_properties,
             'c3_connect_properties': self.c3_connect_properties,
-            'c3_ksql_properties': self.c3_ksql_properties
+            'c3_ksql_properties': self.c3_ksql_properties,
+            'c3_client_properties': self.c3_client_properties
         }
 
     def normalize_sasl_protocol(self, protocol):
@@ -64,6 +67,24 @@ class FilterModule(object):
         for listener in listeners_dict:
             hostname = listeners_dict[listener].get('hostname', default_hostname)
             hostnames = hostnames + [hostname]
+        return hostnames
+    
+    def resolve_hostname(self, hosts_hostvars_dict):
+        # Goes through selected possible VARs to provide the HOSTNAME for a given node for internal addressing within Confluent Platform
+        if hosts_hostvars_dict.get('hostname_aliasing_enabled') == True:
+            return hosts_hostvars_dict.get('hostname', hosts_hostvars_dict.get('ansible_host', hosts_hostvars_dict.get('inventory_hostname')))
+        else:
+            return hosts_hostvars_dict.get('inventory_hostname')
+
+    def resolve_hostnames(self, hosts, hostvars_dict):
+        # Given a collection of hosts, usually from a group, will resolve the correct hostname to use for each.
+        hostnames = []
+        for host in hosts:
+            if host == "localhost":
+                hostnames.append("localhost")
+            else:
+                hostnames.append(self.resolve_hostname(hostvars_dict.get(host)))
+
         return hostnames
 
     def cert_extension(self, hostnames):
@@ -210,6 +231,57 @@ class FilterModule(object):
                 final_dict[config_prefix + 'sasl.jaas.config'] = 'org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required username=\"' + oauth_username + '\" password=\"' + oauth_password + '\" metadataServerUrls=\"' + mds_bootstrap_server_urls + '\";'
 
         return final_dict
+    
+    def c3_client_properties(self, kafka_broker_group_list, groups, hostvars):
+        # For c3's extra kafka broker cluster properties, inputs a list of ansible groups of kafka broker hosts, as well as their ssl settings
+        # Outputs a properties dictionary with properties necessary to connect to each cluster's group
+        # Other inputs help fill out the properties
+        final_dict = {}
+        for ansible_group in kafka_broker_group_list:
+            if ansible_group in groups.keys():
+                delegate_hostvars = hostvars.get(groups[ansible_group][0])
+                delegate_listener = delegate_hostvars['kafka_broker_listeners'].get(delegate_hostvars['control_center_kafka_listener_name'])
+                cluster_name = str(delegate_hostvars.get('kafka_broker_cluster_name')).lower().replace(' ', '_')
+
+                urls = []
+                mds_urls = []
+                for host in groups[ansible_group]:
+                    urls.append(self.resolve_hostname(hostvars[host]) + ':' + str(delegate_listener['port']))
+                    mds_urls.append(str(delegate_hostvars.get('mds_http_protocol'))+'://'+self.resolve_hostname(hostvars[host]) + ':' + str(delegate_hostvars.get('mds_port')))
+
+                final_dict['confluent.controlcenter.kafka.' + cluster_name + '.bootstrap.servers'] = ','.join(urls)
+
+                if delegate_hostvars.get('kafka_broker_rest_proxy_enabled') or delegate_hostvars.get('rbac_enabled'):
+                    final_dict['confluent.controlcenter.kafka.' + cluster_name + '.cprest.url'] = ','.join(mds_urls)
+
+                c_dict = self.client_properties(
+                    delegate_listener, 
+                    delegate_hostvars.get('ssl_enabled'), 
+                    delegate_hostvars.get('pkcs12_enabled'), 
+                    delegate_hostvars.get('ssl_mutual_auth_enabled'), 
+                    delegate_hostvars.get('sasl_protocol'),
+                    'confluent.controlcenter.kafka.' + cluster_name + '.', 
+                    delegate_hostvars.get('control_center_truststore_path'),
+                    delegate_hostvars.get('control_center_truststore_storepass'), 
+                    delegate_hostvars.get('control_center_keystore_path'), 
+                    delegate_hostvars.get('control_center_keystore_storepass'), 
+                    delegate_hostvars.get('control_center_keystore_keypass'),
+                    False, 
+                    delegate_hostvars['sasl_plain_users']['control_center']['principal'], 
+                    delegate_hostvars['sasl_plain_users']['control_center']['password'], 
+                    delegate_hostvars['sasl_scram_users']['control_center']['principal'], 
+                    delegate_hostvars['sasl_scram_users']['control_center']['password'],
+                    delegate_hostvars.get('kerberos_kafka_broker_primary'), 
+                    delegate_hostvars.get('control_center_keytab_path'), 
+                    delegate_hostvars.get('control_center_kerberos_principal'),
+                    False, 
+                    delegate_hostvars.get('control_center_ldap_user'), 
+                    delegate_hostvars.get('control_center_ldap_password'),
+                    delegate_hostvars.get('mds_bootstrap_server_urls')
+                )
+                final_dict.update(c_dict)
+
+        return final_dict
 
     def c3_connect_properties(self, connect_group_list, groups, hostvars, ssl_enabled, http_protocol, port, default_connect_group_id,
             truststore_path, truststore_storepass, keystore_path, keystore_storepass, keystore_keypass ):
@@ -226,7 +298,7 @@ class FilterModule(object):
                         protocol = 'https'
                     else:
                         protocol = 'http'
-                    urls.append(protocol + '://' + host + ':' + str(hostvars[host].get('kafka_connect_rest_port', port)))
+                    urls.append(protocol + '://' + self.resolve_hostname(hostvars[host]) + ':' + str(hostvars[host].get('kafka_connect_rest_port', port)))
 
                 final_dict['confluent.controlcenter.connect.' + hostvars[groups[ansible_group][0]].get('kafka_connect_group_id', default_connect_group_id) + '.cluster'] = ','.join(urls)
 
@@ -255,8 +327,8 @@ class FilterModule(object):
                         protocol = 'https'
                     else:
                         protocol = 'http'
-                    urls.append(protocol + '://' + host + ':' + str(hostvars[host].get('ksql_listener_port', port)))
-                    advertised_urls.append(protocol + '://' + hostvars[host].get('ksql_advertised_listener_hostname', host) + ':' + str(hostvars[host].get('ksql_listener_port', port)))
+                    urls.append(protocol + '://' + self.resolve_hostname(hostvars[host]) + ':' + str(hostvars[host].get('ksql_listener_port', port)))
+                    advertised_urls.append(protocol + '://' + hostvars[host].get('ksql_advertised_listener_hostname', self.resolve_hostname(hostvars[host])) + ':' + str(hostvars[host].get('ksql_listener_port', port)))
 
                 final_dict['confluent.controlcenter.ksql.' + ansible_group + '.url'] = ','.join(urls)
                 final_dict['confluent.controlcenter.ksql.' + ansible_group + '.advertised.url'] = ','.join(advertised_urls)
