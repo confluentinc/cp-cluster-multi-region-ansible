@@ -56,6 +56,7 @@
     comment: "Connect Distributed User"
     system: true
     group: "{{ksql_group}}"
+  when: privileged_install|bool
 
 - name: Set Ksql streams dir permissions
   file:
@@ -64,6 +65,7 @@
     group: "{{ksql_group}}"
     state: directory
     mode: 0750
+  when: privileged_install|bool
 
 # Archive File deployments need to create SystemD service units
 # Copy the tarball's systemd service to the system
@@ -72,7 +74,7 @@
     src: "{{binary_base_path}}/lib/systemd/system/{{ksql.systemd_file|basename}}"
     remote_src: true
     dest: "{{ksql.systemd_file}}"
-    mode: 0644
+    mode: "{{ omit if not privileged_install else '0644' }}"
     force: true
   when: installation_method == "archive"
 
@@ -141,6 +143,7 @@
     mode: 0750
     owner: "{{ksql_user}}"
     group: "{{ksql_group}}"
+  when: privileged_install|bool
 
 - name: Create Ksql Config with Secrets Protection
   include_role:
@@ -161,9 +164,9 @@
   template:
     src: ksql-server.properties.j2
     dest: "{{ksql.config_file}}"
-    mode: 0640
-    owner: "{{ksql_user}}"
-    group: "{{ksql_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else ksql_user }}"
+    group: "{{ omit if not privileged_install else ksql_group }}"
   notify: restart ksql
   when: not ksql_secrets_protection_enabled|bool
 
@@ -174,6 +177,7 @@
     group: "{{ksql_group}}"
     owner: "{{ksql_user}}"
     mode: 0770
+  when: privileged_install|bool
 
 - name: Create log4j Directory
   file:
@@ -182,14 +186,15 @@
     group: "{{ksql_group}}"
     state: directory
     mode: 0750
+  when: privileged_install|bool
 
 - name: Create Ksql log4j Config
   template:
     src: ksql-server_log4j.properties.j2
     dest: "{{ksql.log4j_file}}"
-    mode: 0640
-    owner: "{{ksql_user}}"
-    group: "{{ksql_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else ksql_user }}"
+    group: "{{ omit if not privileged_install else ksql_group }}"
   when: ksql_custom_log4j|bool
   notify: restart ksql
 
@@ -197,9 +202,9 @@
   template:
     src: ksql_jolokia.properties.j2
     dest: "{{ksql_jolokia_config}}"
-    mode: 0640
-    owner: "{{ksql_user}}"
-    group: "{{ksql_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else ksql_user }}"
+    group: "{{ omit if not privileged_install else ksql_group }}"
   when: ksql_jolokia_enabled|bool
   notify: restart ksql
 
@@ -210,7 +215,7 @@
     owner: "{{ksql_user}}"
     mode: 0750
     state: directory
-  when: ksql_rocksdb_path != ""
+  when: ksql_rocksdb_path != "" and privileged_install|bool
 
 - name: Set Permission to RocksDB Files
   file:
@@ -218,15 +223,15 @@
     group: "{{ksql_group}}"
     owner: "{{ksql_user}}"
     recurse: true
-  when: ksql_rocksdb_path != ""
+  when: ksql_rocksdb_path != "" and privileged_install|bool
 
 - name: Deploy JMX Exporter Config File
   copy:
     src: "{{ksql_jmxexporter_config_source_path}}"
     dest: "{{ksql_jmxexporter_config_path}}"
-    mode: 0640
-    owner: "{{ksql_user}}"
-    group: "{{ksql_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else ksql_user }}"
+    group: "{{ omit if not privileged_install else ksql_group }}"
   when: ksql_jmxexporter_enabled|bool
 
 - name: Create Basic Auth Jaas File
@@ -256,15 +261,22 @@
     group: "{{ksql_group}}"
     state: directory
     mode: 0640
+  when: privileged_install|bool
 
 - name: Write Service Overrides
   template:
     src: override.conf.j2
     dest: "{{ksql.systemd_override}}"
-    mode: 0640
-    owner: "{{ksql_user}}"
-    group: "{{ksql_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else ksql_user }}"
+    group: "{{ omit if not privileged_install else ksql_group }}"
   notify: restart ksql
+
+- name: Install Service in User-mode
+  shell:
+    cmd: "XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user enable {{ksql.systemd_file}}"
+  notify: restart ksql
+  when: systemd_mode == 'user'
 
 - name: Certs were Updated - Trigger Restart
   command: /bin/true
@@ -278,6 +290,7 @@
     name: "{{ksql_service_name}}"
     enabled: true
     state: started
+    scope: "{{ 'user' if systemd_mode == 'user' else 'system' }}"
 
 - name: Health Check
   include_tasks: health_check.yml

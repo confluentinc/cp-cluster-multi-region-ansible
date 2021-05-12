@@ -217,6 +217,7 @@
       systemd:
         name: "{{ kafka_broker_service_name }}"
         state: stopped
+        scope: "{{ 'user' if systemd_mode == 'user' else 'system' }}"
 
     - name: Configure Repositories
       import_role:
@@ -297,6 +298,7 @@
         daemon_reload: true
         name: "{{ kafka_broker_service_name }}"
         state: restarted
+        scope: "{{ 'user' if systemd_mode == 'user' else 'system' }}"
 
     - name: Kafka Broker Health Check
       include_tasks: roles/confluent.kafka_broker/tasks/health_check.yml

@@ -59,3 +59,4 @@
       - openssl
       - unzip
   tags: package
+  when: privileged_install|bool

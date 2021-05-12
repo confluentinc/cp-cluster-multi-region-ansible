@@ -49,6 +49,7 @@
 - name: Create Kafka Rest Group
   group:
     name: "{{kafka_rest_group}}"
+  when: privileged_install|bool
 
 - name: Create Kafka Rest User
   user:
@@ -56,6 +57,7 @@
     comment: "Kafka REST User"
     system: true
     group: "{{kafka_rest_group}}"
+  when: privileged_install|bool
 
 # Archive File deployments need to create SystemD service units
 # Copy the tarball's systemd service to the system
@@ -64,7 +66,7 @@
     src: "{{binary_base_path}}/lib/systemd/system/{{kafka_rest.systemd_file|basename}}"
     remote_src: true
     dest: "{{kafka_rest.systemd_file}}"
-    mode: 0644
+    mode: "{{ omit if not privileged_install else '0644' }}"
     force: true
   when: installation_method == "archive"
 
@@ -122,7 +124,7 @@
     path: /var/ssl/private
     state: directory
     mode: 0755
-  when: rbac_enabled|bool
+  when: rbac_enabled|bool and privileged_install|bool
 
 - name: Copy in MDS Public Pem File
   copy:
@@ -131,7 +133,7 @@
     mode: '755'
     owner: "{{kafka_rest_user}}"
     group: "{{kafka_rest_group}}"
-  when: rbac_enabled|bool
+  when: rbac_enabled|bool and privileged_install|bool
 
 - name: Create Kafka Rest Config directory
   file:
@@ -140,6 +142,7 @@
     mode: 0750
     owner: "{{kafka_rest_user}}"
     group: "{{kafka_rest_group}}"
+  when: privileged_install|bool
 
 - name: Create Kafka Rest Config with Secrets Protection
   include_role:
@@ -160,9 +163,9 @@
   template:
     src: kafka-rest.properties.j2
     dest: "{{kafka_rest.config_file}}"
-    mode: 0640
-    owner: "{{kafka_rest_user}}"
-    group: "{{kafka_rest_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else kafka_rest_user}} "
+    group: "{{ omit if not privileged_install else kafka_rest_group}} "
   notify: restart kafka-rest
   when: not kafka_rest_secrets_protection_enabled|bool
 
@@ -173,6 +176,7 @@
     owner: "{{kafka_rest_user}}"
     group: "{{kafka_rest_group}}"
     mode: 0770
+  when: privileged_install|bool
 
 - name: Update log4j Config for Log Cleanup
   include_role:
@@ -192,14 +196,15 @@
     group: "{{kafka_rest_group}}"
     owner: "{{kafka_rest_user}}"
     mode: 0640
+  when: privileged_install|bool
 
 - name: Create Kafka Rest Jolokia Config
   template:
     src: kafka_rest_jolokia.properties.j2
     dest: "{{kafka_rest_jolokia_config}}"
-    mode: 0640
-    owner: "{{kafka_rest_user}}"
-    group: "{{kafka_rest_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else kafka_rest_user}} "
+    group: "{{ omit if not privileged_install else kafka_rest_group}} "
   when: kafka_rest_jolokia_enabled|bool
   notify: restart kafka-rest
 
@@ -207,9 +212,9 @@
   copy:
     src: "{{kafka_rest_jmxexporter_config_source_path}}"
     dest: "{{kafka_rest_jmxexporter_config_path}}"
-    mode: 0640
-    owner: "{{kafka_rest_user}}"
-    group: "{{kafka_rest_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else kafka_rest_user}} "
+    group: "{{ omit if not privileged_install else kafka_rest_group}} "
   when: kafka_rest_jmxexporter_enabled|bool
 
 - name: Create Basic Auth Jaas File
@@ -239,15 +244,22 @@
     group: "{{kafka_rest_group}}"
     state: directory
     mode: 0640
+  when: privileged_install|bool
 
 - name: Write Service Overrides
   template:
     src: override.conf.j2
     dest: "{{kafka_rest.systemd_override}}"
-    mode: 0640
-    owner: "{{kafka_rest_user}}"
-    group: "{{kafka_rest_group}}"
+    mode: "{{ omit if not privileged_install else '0640' }}"
+    owner: "{{ omit if not privileged_install else kafka_rest_user}} "
+    group: "{{ omit if not privileged_install else kafka_rest_group}} "
   notify: restart kafka-rest
+
+- name: Install Service in User-mode
+  shell:
+    cmd: "XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user enable {{kafka_rest.systemd_file}}"
+  notify: restart kafka-rest
+  when: systemd_mode == 'user'
 
 - name: Certs were Updated - Trigger Restart
   command: /bin/true
@@ -261,6 +273,7 @@
     name: "{{kafka_rest_service_name}}"
     enabled: true
     state: started
+    scope: "{{ 'user' if systemd_mode == 'user' else 'system' }}"
 
 - name: Health Check
   include_tasks: health_check.yml

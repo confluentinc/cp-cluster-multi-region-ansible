@@ -1,4 +1,4 @@
-#!/usr/bin/python
+    #!/usr/bin/python
 
 # Copyright: (c) 2019, Confluent Inc
 
@@ -43,6 +43,10 @@ RETURN = '''
 message:
     description: The output message that the module generates
     type: str
+    returned: always
+deleted_connector_names:
+    description: The name of the deleted connectors
+    type: list of str
     returned: always
 '''
 
@@ -105,7 +109,7 @@ def run_module():
         active_connectors=dict(type='list', required=True),
     )
 
-    result = dict(changed=False, message='')
+    result = dict(changed=False, message='', deleted_connector_names=[])
 
     module = AnsibleModule(argument_spec=module_args, supports_check_mode=True)
 
@@ -120,7 +124,6 @@ def run_module():
     # note: using the logic below because PUT /connectors/<name>/config has proven to be unreliable
     # when the connector doesn't exist
     #
-    result['changed'] = False
     output_messages = []
     try:
         current_connector_names = get_current_connectors(connect_url=module.params['connect_url'])
@@ -158,6 +161,7 @@ def run_module():
                 output_messages.append("New connector {} created.".format(connector['name']))
 
         result['message'] = " ".join(output_messages)
+        result['deleted_connector_names'] = deleted_connector_names
 
     except Exception as e:
         result['message'] = str(e)
